@@ -339,7 +339,6 @@ type paged struct {
 	loading bool
 	more    bool   // whether there is a page after those loaded
 	err     string // why the last page didn't load
-	failure error  // retained for automatic recovery, independently of wording
 }
 
 // pageFoot ends a list loaded a page at a time, asking next for the next
@@ -353,7 +352,7 @@ func (a *app) pageFoot(c *ui.Context, pg *paged, next func()) {
 			ui.Text(c, "正在加载…").FontSize(12.5).TextColor(a.pal.muted)
 		case pg.err != "":
 			ui.Text(c, pg.err).FontSize(12.5).TextColor(a.pal.muted)
-			if iconButton(c.Key("retry"), iconReload, 18, a.pal.muted, "重新加载内容").Tooltip("重新加载内容").Clicked() {
+			if ui.Button(c.Key("retry"), "重试").Clicked() {
 				next()
 			}
 		}

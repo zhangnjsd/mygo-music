@@ -1,9 +1,11 @@
 package player
 
-// Cache relocation closes readers and downloads before moving files, while
-// retaining playback state for resumption on the main thread.
+// This file is what moves the song cache's folder under the player: the
+// fetches into it stop, the files they made go, and what plays is let go of
+// at where it is, to play on from there once the folder has moved.
 
-// track registers a shared download so relocation can close every file handle.
+// track puts d under the cache's eye, so that a move of its folder stops it
+// first. It comes back as it was given, for download and lookup to return.
 func (c *Cache) track(d *download) *download {
 	if c == nil || d == nil {
 		return d
@@ -15,7 +17,7 @@ func (c *Cache) track(d *download) *download {
 	c.active[d] = struct{}{}
 	c.mu.Unlock()
 	d.mu.Lock()
-	gone := d.users <= 0
+	gone := d.users <= 0 // let go of already: nothing to stop
 	d.onRelease = func() {
 		c.mu.Lock()
 		delete(c.active, d)
@@ -23,7 +25,7 @@ func (c *Cache) track(d *download) *download {
 	}
 	d.mu.Unlock()
 	if gone {
-		// Release may have finished before onRelease was installed.
+		// What it says was missed: take it back out.
 		c.mu.Lock()
 		delete(c.active, d)
 		c.mu.Unlock()
@@ -31,8 +33,10 @@ func (c *Cache) track(d *download) *download {
 	return d
 }
 
-// Quiesce blocks new cache access and waits for active downloads to close.
-// The returned closure reopens the original cache if relocation fails.
+// Quiesce stops every fetch into the cache, and waits for it to stop, so that
+// its folder may move. It then keeps the cache taking nothing: the folder it
+// moves goes, and what comes late would write into a folder that is gone. The
+// closure it returns lets the cache take songs again, for a move that failed.
 func (c *Cache) Quiesce() func() {
 	if c == nil {
 		return func() {}
@@ -44,7 +48,7 @@ func (c *Cache) Quiesce() func() {
 		active = append(active, d)
 	}
 	c.mu.Unlock()
-	// halt invokes onRelease, which takes the same lock.
+	// Not under the lock: a fetch let go of takes it, to say it has gone.
 	for _, d := range active {
 		d.halt()
 	}
@@ -55,16 +59,16 @@ func (c *Cache) Quiesce() func() {
 	}
 }
 
-// SuspendCache closes audio before relocation and retains its position.
-// Queue, seek and play controls still update state; the returned closure
-// applies that state after relocation. Both calls belong on the main thread.
+// SuspendCache stops what plays, for the cache's folder to move: the song is
+// let go of, its file closed even as the transcription reads it, and where it
+// was is kept, to play on from there once the folder has moved. Until then
+// the queue takes a next track, a seek or a toggle, which apply on resume,
+// the closure it returns, on the main thread.
 func (p *Player) SuspendCache() func() {
 	position := p.Position()
 	p.cacheChanging = true
-	// Old callbacks may refer to the moving directory. Invalidate their
-	// generation and settle busy flags even if resume does not reload audio.
+	// What loads now is stale: it would read the folder that moves.
 	p.gen++
-	p.lyricBusy, p.coverBusy = false, false
 	if p.stream != nil {
 		if dl, _ := p.stream.source(); dl != nil {
 			dl.Close()

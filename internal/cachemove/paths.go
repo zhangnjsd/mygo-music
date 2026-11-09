@@ -1,5 +1,6 @@
-// Package cachemove transfers managed caches after their readers and writers
-// have stopped, publishing copies before saving settings and retiring originals.
+// Package cachemove moves a song cache to another directory: it looks at the
+// two directories, and copies the songs that are whole, once nothing reads or
+// writes either cache any more.
 package cachemove
 
 import (

@@ -1,7 +1,6 @@
 package app
 
 import (
-	"fmt"
 	"maps"
 	"reflect"
 	"slices"
@@ -17,11 +16,9 @@ const listsFresh = 30 * time.Second
 var likedIDs = netease.LikedIDs
 
 type listRequest struct {
-	at      time.Time
-	busy    bool
-	retry   bool
-	failed  bool
-	failure error
+	at    time.Time
+	busy  bool
+	retry bool
 }
 type libraryRefreshState struct {
 	edits       int
@@ -79,8 +76,6 @@ func (a *app) playlistRequest(id int64) *listRequest {
 // forgetPlaylist invalidates the pending request as well as its cached data;
 // an older reply cannot restore a deleted list or clear a newer load's flags.
 func (a *app) forgetPlaylist(id int64) {
-	req := a.cacheRequest(fmt.Sprintf("playlist/%d", id))
-	req.store.Forget(req.scope, req.key)
 	delete(a.playlists, id)
 	delete(a.listRefresh.playlists, id)
 	delete(a.loadingPl, id)
@@ -122,39 +117,17 @@ func (a *app) loadPlaylist(id int64, thenPlay bool) {
 		return
 	}
 	r.at, r.busy, r.retry = a.listsNow(), true, false
-	r.failed, r.failure = false, nil
 	if was == nil {
 		a.loadingPl[id] = true
+		delete(a.plErr, id)
 	}
 	var before netease.Playlist
 	if was != nil {
 		before = copyPlaylist(*was)
 	}
 	uid, gen, revision := a.listenerID(), a.homeGen, a.listRefresh.revision
-	req := a.cacheRequest(fmt.Sprintf("playlist/%d", id))
-	readDisk := was == nil
-	fetch := playlistDetail
 	go func() {
-		if readDisk {
-			var kept *netease.Playlist
-			if at := req.read(&kept); !at.IsZero() && kept != nil && kept.ID == id {
-				a.post(func() {
-					if a.homeGen == gen && a.listRefresh.playlists[id] == r && a.playlists[id] == nil && a.listRefresh.edits == 0 && a.listRefresh.revision == revision {
-						a.playlists[id] = kept
-						was = kept
-						before = copyPlaylist(*kept)
-						delete(a.loadingPl, id)
-						if thenPlay || a.plPlay[id] {
-							a.pl.PlayQueue(kept.Tracks, firstPlayable(kept.Tracks))
-							thenPlay = false
-							delete(a.plPlay, id)
-						}
-					}
-				})
-			}
-		}
-		pl, err := fetch(id)
-		bytes := cacheBytes(pl)
+		pl, err := playlistDetail(id)
 		a.post(func() {
 			if a.listenerID() != uid || a.homeGen != gen || a.listRefresh.playlists[id] != r {
 				return
@@ -164,19 +137,14 @@ func (a *app) loadPlaylist(id int64, thenPlay bool) {
 			delete(a.loadingPl, id)
 			delete(a.plPlay, id)
 			if err != nil || pl == nil {
-				r.failed, r.failure = true, err
 				if was == nil {
 					a.plErr[id] = "歌单加载失败"
 				}
 				return // a refresh failure leaves displayed content intact
 			}
-			if a.listRefresh.edits != 0 || a.listRefresh.revision != revision {
-				r.stale()
-				return
-			}
 			if was != nil {
 				// A local rename, subscription, addition/removal or a replacement wins.
-				if a.playlists[id] != was || !reflect.DeepEqual(*was, before) {
+				if a.listRefresh.edits != 0 || a.listRefresh.revision != revision || a.playlists[id] != was || !reflect.DeepEqual(*was, before) {
 					r.stale()
 					return
 				}
@@ -184,8 +152,6 @@ func (a *app) loadPlaylist(id int64, thenPlay bool) {
 				return
 			}
 			a.playlists[id] = pl
-			delete(a.plErr, id)
-			req.keep(bytes)
 			if was == nil && play {
 				a.pl.PlayQueue(pl.Tracks, firstPlayable(pl.Tracks))
 			}
@@ -201,30 +167,16 @@ func (a *app) loadMine(uid int64) {
 	}
 	r := &a.listRefresh.mine
 	r.at, r.busy, r.retry = a.listsNow(), true, false
-	r.failed, r.failure = false, nil
 	gen, revision := a.homeGen, a.listRefresh.revision
 	beforeMine, beforeSaved := copyPlaylists(a.mine), copyPlaylists(a.saved)
-	req := a.cacheRequest("mine")
-	fetch := userPlaylists
 	go func() {
-		var kept keptLists
-		if at := req.read(&kept); !at.IsZero() {
-			a.post(func() {
-				if a.homeGen == gen && a.listRefresh.edits == 0 && a.listRefresh.revision == revision && a.mine == nil && a.saved == nil {
-					a.mine, a.saved = kept.Mine, kept.Saved
-					beforeMine, beforeSaved = copyPlaylists(a.mine), copyPlaylists(a.saved)
-				}
-			})
-		}
-		made, saved, err := fetch(uid)
-		bytes := cacheBytes(keptLists{made, saved})
+		made, saved, err := userPlaylists(uid)
 		a.post(func() {
 			if a.listenerID() != uid || a.homeGen != gen {
 				return
 			}
 			r.busy = false
 			if err != nil {
-				r.failed, r.failure = true, err
 				return
 			}
 			if a.listRefresh.edits != 0 || a.listRefresh.revision != revision || !reflect.DeepEqual(a.mine, beforeMine) || !reflect.DeepEqual(a.saved, beforeSaved) {
@@ -232,7 +184,6 @@ func (a *app) loadMine(uid int64) {
 				return
 			}
 			a.mine, a.saved = made, saved
-			req.keep(bytes)
 		})
 	}()
 }
@@ -245,40 +196,22 @@ func (a *app) loadLiked(uid int64) {
 	}
 	r := &a.listRefresh.likes
 	r.at, r.busy, r.retry = a.listsNow(), true, false
-	r.failed, r.failure = false, nil
 	gen, revision := a.homeGen, a.listRefresh.revision
 	before := maps.Clone(a.liked)
-	req := a.cacheRequest("likes")
-	fetch := likedIDs
 	go func() {
-		var kept []int64
-		if at := req.read(&kept); !at.IsZero() {
-			a.post(func() {
-				if a.homeGen == gen && a.listRefresh.edits == 0 && a.listRefresh.revision == revision && a.liked == nil {
-					a.liked = make(map[int64]bool, len(kept))
-					for _, id := range kept {
-						a.liked[id] = true
-					}
-					before = maps.Clone(a.liked)
-				}
-			})
-		}
-		ids, err := fetch(uid)
-		bytes := cacheBytes(ids)
+		ids, err := likedIDs(uid)
 		a.post(func() {
 			if a.listenerID() != uid || a.homeGen != gen {
 				return
 			}
 			r.busy = false
 			if err != nil {
-				r.failed, r.failure = true, err
 				return
 			}
 			if a.listRefresh.edits != 0 || a.listRefresh.revision != revision || !maps.Equal(a.liked, before) {
 				r.stale()
 				return
 			}
-			req.keep(bytes)
 			a.liked = make(map[int64]bool, len(ids))
 			for _, id := range ids {
 				a.liked[id] = true

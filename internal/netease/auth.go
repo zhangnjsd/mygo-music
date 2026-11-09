@@ -1,8 +1,6 @@
 package netease
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/http"
@@ -225,7 +223,7 @@ func LikedIDs(uid int64) ([]int64, error) {
 		return nil, err
 	}
 	if res.Code != 200 {
-		return nil, (apiError{Code: res.Code}).codeError("liked songs")
+		return nil, fmt.Errorf("netease: liked songs: code %d", res.Code)
 	}
 	return res.IDs, nil
 }
@@ -288,19 +286,4 @@ func Like(id int64, like bool) error {
 		return fmt.Errorf("netease: like: code %d %s", res.Code, res.Msg)
 	}
 	return nil
-}
-
-// SessionIdentity binds offline account metadata to the restored login cookie.
-// Only its digest is used in cache keys; credentials stay in the keychain.
-func SessionIdentity() string {
-	if httpClient.Jar == nil {
-		return ""
-	}
-	for _, c := range httpClient.Jar.Cookies(siteURL) {
-		if c.Name == "MUSIC_U" && c.Value != "" {
-			sum := sha256.Sum256([]byte(c.Value))
-			return hex.EncodeToString(sum[:])
-		}
-	}
-	return ""
 }

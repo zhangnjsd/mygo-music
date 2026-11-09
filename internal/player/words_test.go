@@ -1,7 +1,7 @@
 package player
 
 import (
-	"io"
+	"errors"
 	"sync/atomic"
 	"testing"
 
@@ -20,7 +20,7 @@ func TestAFailedLyricRequestIsNotAnInstrumental(t *testing.T) {
 	var asks atomic.Int32
 	lyricsOf = func(id int64) (string, string, string, error) {
 		asks.Add(1)
-		return "", "", "", io.ErrUnexpectedEOF
+		return "", "", "", errors.New("nothing came")
 	}
 	c := NewCache(t.TempDir(), 1<<30)
 	ch, p := newLoadPlayer(t, c, netease.Track{ID: 1, Duration: 5000})
@@ -45,7 +45,7 @@ func TestTheWordsComeWhenTheyCanBeAskedAgain(t *testing.T) {
 	var asks atomic.Int32
 	lyricsOf = func(id int64) (string, string, string, error) {
 		if asks.Add(1) < lyricTries {
-			return "", "", "", io.ErrUnexpectedEOF
+			return "", "", "", errors.New("nothing came")
 		}
 		return "[00:01.00]你好\n", "", "", nil
 	}

@@ -165,7 +165,7 @@ func (e apiError) codeError(path string) error {
 	if msg == "" {
 		msg = e.Msg
 	}
-	err := responseError{e.Code, fmt.Sprintf("netease: %s: code %d %s", path, e.Code, msg)}
+	err := fmt.Errorf("netease: %s: code %d %s", path, e.Code, msg)
 	switch e.Code {
 	case -460:
 		return fmt.Errorf("%w: %w", ErrRiskControl, err)
@@ -200,13 +200,13 @@ func post(path string, form url.Values, out any) error {
 func do(req *http.Request, out any) error {
 	req.Header.Set("User-Agent", UserAgent)
 	req.Header.Set("Referer", apiBase+"/")
-	res, err := DoRequest(httpClient, req)
+	res, err := httpClient.Do(req)
 	if err != nil {
 		return err
 	}
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return responseError{res.StatusCode, fmt.Sprintf("netease: %s: %s", req.URL.Path, res.Status)}
+		return fmt.Errorf("netease: %s: %s", req.URL.Path, res.Status)
 	}
 	body, err := io.ReadAll(res.Body)
 	if err != nil {
@@ -340,7 +340,7 @@ func SongDetails(ids []int64) ([]Track, error) {
 			return out, err
 		}
 		if res.Code != 200 {
-			return out, (apiError{Code: res.Code}).codeError("song detail")
+			return out, fmt.Errorf("netease: song detail: code %d", res.Code)
 		}
 		withPrivileges(res.Songs, res.Privileges)
 		out = append(out, res.Songs...)
@@ -561,16 +561,13 @@ func Fetch(url string) ([]byte, error) {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", UserAgent)
-	if cache := images.Load(); cache != nil {
-		return cache.fetch(req)
-	}
-	res, err := DoRequest(httpClient, req)
+	res, err := httpClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		return nil, responseError{res.StatusCode, res.Status}
+		return nil, errors.New(res.Status)
 	}
 	return io.ReadAll(res.Body)
 }
