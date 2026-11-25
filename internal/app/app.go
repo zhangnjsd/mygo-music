@@ -78,6 +78,7 @@ type app struct {
 	savingPl     map[int64]bool     // the playlists whose saving or its end is on its way
 	recPlaylists []netease.Playlist // the day's playlists picked for the listener
 	login        loginState
+	keyringHelp  keyringHelpDialog
 	accountOpen  bool         // the dropdown of the account row shows
 	naming       nameDialog   // the name of a playlist asked for
 	deleting     deleteDialog // whether to delete a playlist, asked

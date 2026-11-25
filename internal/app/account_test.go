@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"fmt"
 	"image"
 	"image/draw"
 	"image/png"
@@ -114,6 +115,148 @@ func TestLoginSaveSuccessClosesDialog(t *testing.T) {
 	wait(t, posts, "the successful session save")()
 	if !a.login.finished || a.login.open || a.login.err != "" {
 		t.Fatalf("saved session did not finish the login: %+v", a.login)
+	}
+}
+
+// Only an unavailable Linux credential service replaces the QR dialog with setup guidance, preserving the active account.
+func TestLoginSaveFailureGuidance(t *testing.T) {
+	for _, tc := range []struct {
+		name, goos string
+		err        error
+		guide      bool
+	}{
+		{"linux-missing", "linux", fmt.Errorf("secrets: %w", errors.ErrUnsupported), true},
+		{"linux-denied", "linux", errors.New("unlock denied"), false},
+		{"linux-no-cookie", "linux", errors.New("no session cookie"), false},
+		{"macos", "darwin", errors.ErrUnsupported, false},
+		{"windows", "windows", errors.ErrUnsupported, false},
+	} {
+		for _, dialog := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/dialog=%t", tc.name, dialog), func(t *testing.T) {
+				a := newTestApp()
+				profile := &netease.Profile{UserID: 42}
+				a.profile = profile
+				a.login = loginState{open: dialog, gen: 7, finished: true}
+				a.loginSaveFailed(tc.err, dialog, tc.goos)
+				if a.keyringHelp.open != tc.guide || a.login.open != (dialog && !tc.guide) {
+					t.Fatalf("guide open=%t, QR open=%t", a.keyringHelp.open, a.login.open)
+				}
+				if a.profile != profile || a.login.gen != 7 {
+					t.Fatal("save failure changed the active login")
+				}
+				if dialog && (a.login.finished || a.login.err == "") || !dialog && a.toast == "" {
+					t.Fatal("save failure was hidden or announced as a durable login")
+				}
+			})
+		}
+	}
+}
+
+// A save failure delivered after sign-out cannot show instructions for the previous account.
+func TestStaleLoginSaveFailureIsIgnored(t *testing.T) {
+	save := saveLoginSession
+	t.Cleanup(func() { saveLoginSession = save })
+	saveLoginSession = func() error { return errors.ErrUnsupported }
+	a := newTestApp()
+	posts := testPosts(a)
+	a.login = loginState{open: true, gen: 1}
+	a.saveLogin(func() { t.Error("failed save reported success") })
+	apply := wait(t, posts, "the failed session save")
+	a.login = loginState{gen: 2}
+	a.homeGen++
+	apply()
+	if a.login.err != "" || a.toast != "" || a.keyringHelp.open {
+		t.Fatal("an old account's save failure changed the current UI")
+	}
+}
+
+// Dismissing the setup guide keeps the current login, including when the text must scroll in a small window.
+func TestKeyringGuideDismissal(t *testing.T) {
+	for _, dark := range []bool{false, true} {
+		t.Run(fmt.Sprintf("dark=%t", dark), func(t *testing.T) {
+			a := newTestApp()
+			profile := &netease.Profile{UserID: 42}
+			a.profile = profile
+			a.login = loginState{open: true}
+			a.loginSaveFailed(errors.ErrUnsupported, true, "linux")
+			tt := ui.NewTester(func(c *ui.Context) {
+				a.pal = paletteFor(c.Theme())
+				a.keyringHelpDialog(c)
+			}, 640, 480)
+			tt.SetDark(dark)
+			tt.Frame()
+			tt.Advance(time.Second)
+			tt.Frame()
+			if dir := os.Getenv("NM_FRAMES"); dir != "" {
+				for _, end := range []bool{false, true} {
+					if end {
+						tt.Scroll(320, 280, 0, 10000)
+						tt.Frame()
+					}
+					f, err := os.Create(filepath.Join(dir, fmt.Sprintf("keyring-guide-dark-%t-end-%t.png", dark, end)))
+					if err != nil {
+						t.Fatal(err)
+					}
+					err = png.Encode(f, tt.Image())
+					f.Close()
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			if err := tt.Click("关闭"); err != nil {
+				t.Fatal(err)
+			}
+			tt.Frame()
+			if a.keyringHelp.open || a.login.open || a.profile != profile {
+				t.Fatal("dismissing instructions changed the login or left a modal open")
+			}
+		})
+	}
+}
+
+// Every copy button writes only its command to the clipboard, even after the guide scrolls.
+func TestKeyringGuideCopiesCommands(t *testing.T) {
+	copy := copyText
+	t.Cleanup(func() { copyText = copy })
+	var copied string
+	var copyErr error
+	copyText = func(text string) error { copied = text; return copyErr }
+	a := newTestApp()
+	a.keyringHelp.open = true
+	tt := ui.NewTester(func(c *ui.Context) {
+		a.pal = paletteFor(c.Theme())
+		a.keyringHelpDialog(c)
+	}, 640, 480)
+	tt.Frame()
+	tt.Advance(time.Second)
+	commands := append([]keyringCommand(nil), keyringInstallCommands...)
+	commands = append(commands, keyringCommand{"启动密码服务", keyringStartCommand})
+	for _, command := range commands {
+		// Bring each command into view without relying on the wording of the instructions.
+		found := false
+		for range 20 {
+			if err := tt.Click("复制 " + command.name + " 命令"); err == nil {
+				found = true
+				break
+			}
+			tt.Scroll(320, 280, 0, 60)
+			tt.Frame()
+		}
+		if !found || copied != command.command {
+			t.Fatalf("copy %s: got %q, want %q (button reached=%t)", command.name, copied, command.command, found)
+		}
+		if !a.keyringHelp.open || a.toast == "" {
+			t.Fatal("copying closed the guide or gave no feedback")
+		}
+	}
+	copyErr = errors.New("clipboard unavailable")
+	a.toast = ""
+	if err := tt.Click("复制 启动密码服务 命令"); err != nil {
+		t.Fatal(err)
+	}
+	if a.toast == "" || !a.keyringHelp.open {
+		t.Fatal("clipboard failure was hidden or closed the guide")
 	}
 }
 

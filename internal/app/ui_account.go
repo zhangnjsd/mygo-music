@@ -56,15 +56,32 @@ func (a *app) saveLogin(onSaved func()) {
 				}
 				return
 			}
-			const message = "登录凭据保存失败，本次登录仅在应用运行期间有效"
-			if dialog {
-				a.login.finished = false
-				a.login.err = message
-			} else if homeGen == a.homeGen {
-				a.toast = message
+			if dialog || homeGen == a.homeGen {
+				a.loginSaveFailed(err, dialog, runtime.GOOS)
 			}
 		})
 	}()
+}
+
+// loginSaveFailed offers setup instructions only when Linux has no credential
+// service. Other failures, such as a denied unlock, retain the usual message.
+func (a *app) loginSaveFailed(err error, dialog bool, goos string) {
+	const message = "登录凭据保存失败，本次登录仅在应用运行期间有效"
+	if dialog {
+		a.login.finished = false
+		a.login.err = message
+	} else {
+		a.toast = message
+	}
+	if goos != "linux" || !errors.Is(err, errors.ErrUnsupported) {
+		return
+	}
+	// The QR confirmation has already committed the in-memory session. Replace
+	// its dialog with the scrollable guide instead of asking for another scan.
+	if dialog {
+		a.login.open = false
+	}
+	a.keyringHelp = keyringHelpDialog{open: true}
 }
 
 // boot signs in with the session in the keychain, if any, then loads the
