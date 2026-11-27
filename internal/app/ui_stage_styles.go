@@ -188,17 +188,75 @@ func partitaRows(l *lyrics.Line, h float32) []partitaRow {
 	return rows
 }
 
+// partitaRowLayout is a row of 云阶's line as it is drawn: where it sits and
+// the shape of each of its words.
+type partitaRowLayout struct {
+	partitaRow
+	shapes []wordShape
+}
+
+// partitaLineLayout is the layout of the line 云阶 showed last, kept the way
+// stageWordLayout is: the stage builds the same line again on every frame of
+// the seconds its words spring in, and measuring its words each time costs
+// more than drawing them.
+type partitaLineLayout struct {
+	line *lyrics.Line
+	f, h float32
+	font lyricTypeface
+	rows []partitaRowLayout
+}
+
+// laidOutPartita is partitaLayout for the line at f on a stage h tall, laid
+// out once and kept.
+func (a *app) laidOutPartita(c *ui.Context, l *lyrics.Line, f, h float32, font lyricTypeface) []partitaRowLayout {
+	if a.partitaWords.line == l && a.partitaWords.f == f && a.partitaWords.h == h && a.partitaWords.font == font {
+		return a.partitaWords.rows
+	}
+	rows := partitaLayout(c, l, f, h, font)
+	a.partitaWords = partitaLineLayout{line: l, f: f, h: h, font: font, rows: rows}
+	return rows
+}
+
+// partitaLayout lays l out as 云阶 draws it: its rows, and the words of each
+// one, placed and measured.
+func partitaLayout(c *ui.Context, l *lyrics.Line, f, h float32, font lyricTypeface) []partitaRowLayout {
+	rows := partitaRows(l, h)
+	out := make([]partitaRowLayout, len(rows))
+	for ri, row := range rows {
+		words := l.Words[row.from:row.to]
+		shapes := make([]wordShape, len(words))
+		widths := make([]float32, len(words))
+		seed := float64(words[0].Start/time.Millisecond) / 1000
+		for i, w := range words {
+			widths[i] = font.width(c, w.Text, f, 800)
+			ws := seed + float64(i)*7.13
+			shapes[i] = wordShape{
+				x:      (lineRandom(ws, 1) - 0.5) * 12,
+				y:      (lineRandom(ws, 2) - 0.5) * 12,
+				rotate: (lineRandom(ws, 3) - 0.5) * 6,
+				scale:  row.scale,
+				drift:  (lineRandom(ws, 8) - 0.5) * 20,
+			}
+		}
+		spaceWords(shapes, widths, f*0.1)
+		shapes[len(shapes)-1].margin = 0
+		shapes[len(shapes)-1].last = ri == len(rows)-1
+		out[ri] = partitaRowLayout{partitaRow: row, shapes: shapes}
+	}
+	return out
+}
+
 // partitaLine shows l on 云阶 as it is at pos: its rows stacked in the
 // middle, each sliding in from the side of its guide as its first word is
 // due, the words in it springing in as classic's do. The whole line is at
 // opacity fade, swelling a little as it goes.
 func (a *app) partitaLine(c *ui.Context, l *lyrics.Line, pos time.Duration, f, h, fade float32, accent ui.Color, font lyricTypeface) {
 	const lookahead = 80 * time.Millisecond
-	rows := partitaRows(l, h)
 	if wordsLength(l.Words) > 40 {
 		f *= 0.8
 	}
 	f *= 0.8
+	rows := a.laidOutPartita(c, l, f, h, font)
 	grow := 1 + 0.05*(1-fade)
 	ui.Column(c.Key(l.At)).Absolute().Top(0).Left(0).Right(0).Bottom(0).Center().
 		Opacity(fade).Scale(grow, grow).PassThrough().Children(func() {
@@ -225,24 +283,6 @@ func (a *app) partitaLine(c *ui.Context, l *lyrics.Line, pos time.Duration, f, h
 				color, alpha = accent, 1
 			}
 
-			shapes := make([]wordShape, len(words))
-			widths := make([]float32, len(words))
-			seed := float64(words[0].Start/time.Millisecond) / 1000
-			for i, w := range words {
-				widths[i] = font.width(c, w.Text, f, 800)
-				ws := seed + float64(i)*7.13
-				shapes[i] = wordShape{
-					x:      (lineRandom(ws, 1) - 0.5) * 12,
-					y:      (lineRandom(ws, 2) - 0.5) * 12,
-					rotate: (lineRandom(ws, 3) - 0.5) * 6,
-					scale:  row.scale,
-					drift:  (lineRandom(ws, 8) - 0.5) * 20,
-				}
-			}
-			spaceWords(shapes, widths, f*0.1)
-			shapes[len(shapes)-1].margin = 0
-			shapes[len(shapes)-1].last = ri == len(rows)-1
-
 			pad := f * (row.scale*1.4 - 1) / 2
 			ui.Row(c.Key(ri)).AlignItems(ui.Center).Padding(3, 8).Margin(max(0, pad), 0, max(0, pad)+10, 0).
 				Translate(x, row.y).Scale(scale, scale).Opacity(opacity).
@@ -262,7 +302,7 @@ func (a *app) partitaLine(c *ui.Context, l *lyrics.Line, pos time.Duration, f, h
 				}).
 				Children(func() {
 					for i, w := range words {
-						a.stageWord(c.Key(i), w, shapes[i], pos, f, accent)
+						a.stageWord(c.Key(i), w, row.shapes[i], pos, f, accent)
 					}
 				})
 		}

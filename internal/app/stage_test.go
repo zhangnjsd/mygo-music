@@ -134,3 +134,65 @@ func TestTiltSplitsAtPunctuation(t *testing.T) {
 		t.Errorf("split at %d, not after 星，", parts[0].to)
 	}
 }
+
+// 云阶 lays out the line, size and stage height it is given: it keeps the
+// one it laid out last, and handing that back for another line, or for a
+// stage of another height, would set a line's words where the last line's
+// sat.
+func TestPartitaLayoutFollowsItsLineAndStage(t *testing.T) {
+	a := newTestApp()
+	line := func(at time.Duration, texts ...string) *lyrics.Line {
+		l := &lyrics.Line{At: at, End: at + time.Second, Timed: true}
+		for i, text := range texts {
+			start := at + time.Duration(i)*200*time.Millisecond
+			l.Words = append(l.Words, lyrics.Word{Text: text, Start: start, End: start + 150*time.Millisecond})
+			l.Text += text
+		}
+		return l
+	}
+	eight := line(0, "one", "two", "three", "four", "five", "six", "seven", "eight")
+	three := line(10*time.Second, "nine", "ten", "eleven")
+	font := lyricTypeface{}
+
+	// Two lines at the same size, then the first line on a shorter stage:
+	// each settles over the one before it, as the stage shows them.
+	var tall, shorter, tallerAgain, other, bigger []partitaRowLayout
+	ui.NewTesterWith(func(c *ui.Context) {
+		tall = a.laidOutPartita(c, eight, 40, 900, font)
+		other = a.laidOutPartita(c, three, 40, 900, font)
+		shorter = a.laidOutPartita(c, eight, 40, 300, font)
+		tallerAgain = a.laidOutPartita(c, eight, 40, 900, font)
+		bigger = a.laidOutPartita(c, eight, 80, 900, font)
+	}, 360, 300, ui.TesterOptions{})
+
+	// The rows describe the line asked for, not the one laid out before it.
+	if len(tall) < 2 {
+		t.Fatalf("eight words on a 900 tall stage: %d rows, want more than one", len(tall))
+	}
+	if last := tall[len(tall)-1]; last.to != len(eight.Words) || !last.shapes[len(last.shapes)-1].last {
+		t.Errorf("eight words: the last row ends at word %d of %d, and its last word ends the line", last.to, len(eight.Words))
+	}
+	if len(other) > len(three.Words) {
+		t.Fatalf("three words after eight: %d rows for %d words", len(other), len(three.Words))
+	}
+	if last := other[len(other)-1]; last.to != len(three.Words) {
+		t.Errorf("three words after eight: the last row ends at word %d, want %d", last.to, len(three.Words))
+	}
+	if got := len(other[0].shapes); got == len(tall[0].shapes) {
+		t.Errorf("the shapes of the line before were kept for another line of other words")
+	}
+	// A shorter stage stacks the same line in fewer rows.
+	if len(shorter) >= len(tall) {
+		t.Fatalf("300 tall: %d rows, not fewer than the %d of a 900 tall stage", len(shorter), len(tall))
+	}
+	// The words are measured at the size they are given: a larger size leaves
+	// more room after each one.
+	if bigger[0].shapes[0].margin <= tallerAgain[0].shapes[0].margin {
+		t.Errorf("measured at 80: %g after the first word, no more than the %g of 40",
+			bigger[0].shapes[0].margin, tallerAgain[0].shapes[0].margin)
+	}
+	// The same line at the same height comes back as it was.
+	if len(tallerAgain) != len(tall) || tallerAgain[0].from != tall[0].from || tallerAgain[0].x != tall[0].x {
+		t.Errorf("the same line came back laid out differently: %+v, then %+v", tall[0].partitaRow, tallerAgain[0].partitaRow)
+	}
+}

@@ -176,6 +176,7 @@ type app struct {
 	comments                       commentState
 	tabCount                       rollState // the count on the comments' tab, as it rolls
 	stageWords                     stageWordLayout
+	partitaWords                   partitaLineLayout
 
 	fmMode        int    // the FM mode chosen, in fmModes
 	fmSynced      string // the radio fmMode was last taken from
